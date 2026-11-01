@@ -50,3 +50,7 @@ tests/      automated tests
 
 ## Notes
 Only monitor systems you own or have permission to test. No network scanning is included.
+
+## docker compose up --build
+Open http://localhost:8000. Data is stored in a Docker volume (`monitor-data`) and survives restarts.
+Stop with `docker compose down` (add `-v` to also delete the data).
