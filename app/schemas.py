@@ -1,5 +1,6 @@
 import re
 from datetime import datetime
+from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 HOST_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.\-]{0,253}[A-Za-z0-9])?$")
@@ -33,8 +34,37 @@ class TargetBase(BaseModel):
         return self
 
 
+
 class TargetOut(TargetBase):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
     created_at: datetime
+
+
+
+
+class CheckResultOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    target_id: int
+    checked_at: datetime
+    is_up: bool
+    status_code: Optional[int] = None
+    latency_ms: Optional[float] = None
+    error: Optional[str] = None
+
+
+class TargetStatus(BaseModel):
+    target_id: int
+    name: str
+    address: str
+    state: str  # unknown, up, slow, down
+    last_checked_at: Optional[datetime] = None
+    last_latency_ms: Optional[float] = None
+    avg_latency_ms: Optional[float] = None
+    uptime_percent: Optional[float] = None
+    total_checks: int
+
+
