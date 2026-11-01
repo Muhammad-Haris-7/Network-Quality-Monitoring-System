@@ -11,6 +11,22 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def evaluate(target: models.Target, is_up: bool, latency_ms):
+    """Return (state, level) for one check result.
+
+    state: up, slow, critical, down
+    level: ok, warning, critical
+    """
+    if not is_up:
+        return "down", "critical"
+    if latency_ms is not None:
+        if latency_ms >= target.critical_ms:
+            return "critical", "critical"
+        if latency_ms >= target.warning_ms:
+            return "slow", "warning"
+    return "up", "ok"
+
+
 def perform_check(target: models.Target) -> dict:
     if target.check_type == "ping":
         result = check_ping(target.address)
@@ -24,10 +40,51 @@ def perform_check(target: models.Target) -> dict:
     return check_http(target.address)
 
 
+def _event_message(target: models.Target, level: str, result: dict) -> str:
+    if not result["is_up"]:
+        return f"{target.name} is unreachable ({result['error'] or 'no response'})"
+    latency = result["latency_ms"]
+    if level == "critical":
+        return (f"{target.name} response time {latency} ms is above the "
+                f"critical threshold ({target.critical_ms} ms)")
+    if level == "warning":
+        return (f"{target.name} response time {latency} ms is above the "
+                f"warning threshold ({target.warning_ms} ms)")
+    suffix = f" ({latency} ms)" if latency is not None else ""
+    return f"{target.name} has recovered{suffix}"
+
+
+def record_event_if_changed(db: Session, target: models.Target, previous, result: dict):
+    """Create an event only when the level changes, so repeated checks do not spam the log."""
+    previous_level = "ok"
+    if previous is not None:
+        _, previous_level = evaluate(target, previous.is_up, previous.latency_ms)
+    _, new_level = evaluate(target, result["is_up"], result["latency_ms"])
+    if new_level == previous_level:
+        return None
+
+    level = "recovered" if new_level == "ok" else new_level
+    event = models.Event(
+        target_id=target.id,
+        created_at=utc_now(),
+        level=level,
+        message=_event_message(target, level, result),
+    )
+    db.add(event)
+    return event
+
+
 def run_check(db: Session, target: models.Target) -> models.CheckResult:
+    previous = (
+        db.query(models.CheckResult)
+        .filter(models.CheckResult.target_id == target.id)
+        .order_by(models.CheckResult.id.desc())
+        .first()
+    )
     result = perform_check(target)
     row = models.CheckResult(target_id=target.id, checked_at=utc_now(), **result)
     db.add(row)
+    record_event_if_changed(db, target, previous, result)
     db.commit()
     db.refresh(row)
     return row
@@ -65,14 +122,7 @@ def build_status(db: Session, target: models.Target) -> dict:
     )
     last = results.order_by(models.CheckResult.id.desc()).first()
 
-    if last is None:
-        state = "unknown"
-    elif not last.is_up:
-        state = "down"
-    elif last.latency_ms is not None and last.latency_ms >= target.warning_ms:
-        state = "slow"
-    else:
-        state = "up"
+    state = "unknown" if last is None else evaluate(target, last.is_up, last.latency_ms)[0]
 
     return {
         "target_id": target.id,

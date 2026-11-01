@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Network Monitor</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  :root {
+    --bg: #f4f6f8; --card: #ffffff; --text: #1f2933; --muted: #6b7785; --border: #e1e6eb;
+    --up: #1f9d55; --slow: #c99700; --critical: #e67e22; --down: #d64545; --unknown: #8a94a0;
+    --accent: #2f6fed;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+         background: var(--bg); color: var(--text); }
+  header { background: #1f2933; color: #fff; padding: 14px 20px; display: flex;
+           justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
+  header h1 { margin: 0; font-size: 18px; }
+  header span { font-size: 13px; color: #b8c2cc; }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+  .card h2 { margin: 0 0 12px; font-size: 16px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; }
+  .stat { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
+  .stat .num { font-size: 26px; font-weight: 700; }
+  .stat .label { font-size: 13px; color: var(--muted); }
+  form { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; align-items: end; }
+  label { font-size: 12px; color: var(--muted); display: grid; gap: 4px; }
+  input, select { padding: 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; width: 100%; }
+  .check { display: flex; align-items: center; gap: 6px; padding-bottom: 8px; }
+  .check input { width: auto; }
+  button { padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; background: #fff;
+           cursor: pointer; font-size: 13px; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.danger { color: var(--down); }
+  button:hover { filter: brightness(0.96); }
+  .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  .toolbar select { width: auto; }
+  a.button { padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px;
+             color: var(--text); text-decoration: none; background: #fff; }
+  .wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; }
+  tr.selected { background: #eef3ff; }
+  .muted { color: var(--muted); font-size: 12px; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; color: #fff; font-size: 12px;
+           font-weight: 600; text-transform: uppercase; }
+  .badge.up, .badge.recovered { background: var(--up); }
+  .badge.slow, .badge.warning { background: var(--slow); }
+  .badge.critical { background: var(--critical); }
+  .badge.down { background: var(--down); }
+  .badge.unknown { background: var(--unknown); }
+  .actions { display: flex; gap: 6px; }
+  .msg { padding: 8px 12px; border-radius: 6px; font-size: 14px; margin-top: 10px; }
+  .msg.ok { background: #e6f6ec; color: #17653a; }
+  .msg.error { background: #fdeaea; color: #a12a2a; }
+  .chartbox { position: relative; height: 280px; }
+  #toasts { position: fixed; right: 16px; top: 16px; display: grid; gap: 8px; z-index: 10; max-width: 340px; }
+  .toast { padding: 10px 14px; border-radius: 8px; color: #fff; font-size: 14px; cursor: pointer;
+           box-shadow: 0 4px 12px rgba(0,0,0,.2); }
+  .toast.warning { background: var(--slow); }
+  .toast.critical { background: var(--down); }
+  .toast.recovered { background: var(--up); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Network Quality Monitor</h1>
+  <span id="updated">Loading...</span>
+</header>
+<div id="toasts"></div>
+
+<main>
+  <section class="cards">
+    <div class="stat"><div class="num" id="c-total">0</div><div class="label">Targets</div></div>
+    <div class="stat"><div class="num" id="c-up" style="color:var(--up)">0</div><div class="label">Up</div></div>
+    <div class="stat"><div class="num" id="c-slow" style="color:var(--slow)">0</div><div class="label">Slow</div></div>
+    <div class="stat"><div class="num" id="c-down" style="color:var(--down)">0</div><div class="label">Critical / down</div></div>
+  </section>
+
+  <section class="card">
+    <h2 id="form-title">Add target</h2>
+    <form id="target-form">
+      <label>Name <input id="f-name" required maxlength="100" placeholder="My website"></label>
+      <label>Address <input id="f-address" required maxlength="255" placeholder="https://example.com"></label>
+      <label>Check type
+        <select id="f-type"><option value="http">HTTP</option><option value="ping">Ping</option></select>
+      </label>
+      <label>Interval (sec) <input id="f-interval" type="number" value="60" min="10" max="86400"></label>
+      <label>Warning (ms) <input id="f-warning" type="number" value="500" min="1"></label>
+      <label>Critical (ms) <input id="f-critical" type="number" value="2000" min="1"></label>
+      <label class="check"><input id="f-active" type="checkbox" checked> Active</label>
+      <div class="actions">
+        <button class="primary" id="save-btn" type="submit">Add target</button>
+        <button id="cancel-btn" type="button" hidden>Cancel</button>
+      </div>
+    </form>
+    <div class="muted" style="margin-top:8px">HTTP: https://example.com &nbsp;|&nbsp; Ping: example.com or an IP address. Only monitor systems you own or have permission to test.</div>
+    <div id="form-msg" class="msg" hidden></div>
+  </section>
+
+  <section class="card">
+    <h2>Targets</h2>
+    <div class="toolbar">
+      <label style="display:flex;gap:6px;align-items:center">Status
+        <select id="filter">
+          <option value="">All</option>
+          <option value="up">Up</option>
+          <option value="slow">Slow</option>
+          <option value="critical">Critical</option>
+          <option value="down">Down</option>
+          <option value="unknown">Unknown</option>
+        </select>
+      </label>
+      <a class="button" id="export" href="/report.csv">Export CSV report</a>
+    </div>
+    <div class="wrap">
+      <table>
+        <thead><tr>
+          <th>Status</th><th>Target</th><th>Last check</th><th>Latency</th><th>Average</th><th>Uptime</th><th>Actions</th>
+        </tr></thead>
+        <tbody id="targets-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2 id="chart-title">Latency history</h2>
+    <div class="chartbox"><canvas id="chart"></canvas></div>
+    <div class="muted" id="chart-note"></div>
+  </section>
+
+  <section class="card">
+    <h2>Event log</h2>
+    <div class="toolbar">
+      <label style="display:flex;gap:6px;align-items:center">Level
+        <select id="event-level">
+          <option value="">All</option>
+          <option value="warning">Warning</option>
+          <option value="critical">Critical</option>
+          <option value="recovered">Recovered</option>
+        </select>
+      </label>
+    </div>
+    <div class="wrap">
+      <table>
+        <thead><tr><th>Time</th><th>Level</th><th>Target</th><th>Message</th></tr></thead>
+        <tbody id="events-body"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const toDate = (s) => new Date(/Z$|[+-]\d\d:\d\d$/.test(s) ? s : s + "Z");
+const fmtTime = (s) => (s ? toDate(s).toLocaleString() : "-");
+const fmtMs = (v) => (v == null ? "-" : v + " ms");
+const fmtPct = (v) => (v == null ? "-" : v + "%");
+const JSON_HEADERS = { "Content-Type": "application/json" };
+
+let selectedId = null;
+let editingId = null;
+let chart = null;
+let lastEventId = null;
+let refreshing = false;
+
+function errorText(data) {
+  if (!data) return "";
+  if (typeof data.detail === "string") return data.detail;
+  if (Array.isArray(data.detail)) {
+    return data.detail.map((d) => {
+      const field = (d.loc || []).slice(1).join(".");
+      const msg = (d.msg || "").replace(/^Value error, /, "");
+      return field ? field + ": " + msg : msg;
+    }).join("; ");
+  }
+  return "";
+}
+
+async function api(path, options) {
+  const res = await fetch(path, options);
+  if (res.status === 204) return null;
+  let data = null;
+  try { data = await res.json(); } catch (e) { /* no body */ }
+  if (!res.ok) throw new Error(errorText(data) || "Request failed (" + res.status + ")");
+  return data;
+}
+
+function showMessage(text, kind) {
+  const box = $("form-msg");
+  box.textContent = text;
+  box.className = "msg " + kind;
+  box.hidden = false;
+  if (kind === "ok") setTimeout(() => { box.hidden = true; }, 5000);
+}
+
+function toast(ev) {
+  const el = document.createElement("div");
+  el.className = "toast " + ev.level;
+  el.textContent = ev.message;
+  el.onclick = () => el.remove();
+  $("toasts").appendChild(el);
+  setTimeout(() => el.remove(), 8000);
+}
+
+function resetForm() {
+  $("target-form").reset();
+  editingId = null;
+  $("form-title").textContent = "Add target";
+  $("save-btn").textContent = "Add target";
+  $("cancel-btn").hidden = true;
+}
+
+async function loadStatus() {
+  const filter = $("filter").value;
+  const all = await api("/status");
+  const rows = filter ? await api("/status?state=" + filter) : all;
+
+  $("c-total").textContent = all.length;
+  $("c-up").textContent = all.filter((r) => r.state === "up").length;
+  $("c-slow").textContent = all.filter((r) => r.state === "slow").length;
+  $("c-down").textContent = all.filter((r) => r.state === "down" || r.state === "critical").length;
+
+  if (!all.some((r) => r.target_id === selectedId)) {
+    selectedId = all.length ? all[0].target_id : null;
+  }
+
+  $("targets-body").innerHTML = rows.length ? rows.map((r) => `
+    <tr class="${r.target_id === selectedId ? "selected" : ""}">
+      <td><span class="badge ${esc(r.state)}">${esc(r.state)}</span></td>
+      <td><strong>${esc(r.name)}</strong><div class="muted">${esc(r.address)}</div></td>
+      <td>${esc(fmtTime(r.last_checked_at))}</td>
+      <td>${esc(fmtMs(r.last_latency_ms))}</td>
+      <td>${esc(fmtMs(r.avg_latency_ms))}</td>
+      <td>${esc(fmtPct(r.uptime_percent))}</td>
+      <td class="actions">
+        <button data-act="chart" data-id="${r.target_id}">Chart</button>
+        <button data-act="check" data-id="${r.target_id}">Check now</button>
+        <button data-act="edit" data-id="${r.target_id}">Edit</button>
+        <button class="danger" data-act="delete" data-id="${r.target_id}">Delete</button>
+      </td>
+    </tr>`).join("")
+    : `<tr><td colspan="7" class="muted">No targets to show.</td></tr>`;
+}
+
+async function loadChart() {
+  if (typeof Chart === "undefined") {
+    $("chart-note").textContent = "The chart library could not load. Check your internet connection.";
+    return;
+  }
+  if (!selectedId) {
+    $("chart-title").textContent = "Latency history";
+    $("chart-note").textContent = "Add a target to see its history.";
+    if (chart) { chart.destroy(); chart = null; }
+    return;
+  }
+  const rows = (await api("/targets/" + selectedId + "/results?limit=50")).reverse();
+  const target = await api("/targets/" + selectedId);
+  $("chart-title").textContent = "Latency history: " + target.name;
+  $("chart-note").textContent = rows.length
+    ? "Last " + rows.length + " checks. Red crosses mark failed checks."
+    : "No checks yet. Wait a few seconds.";
+
+  const labels = rows.map((r) => toDate(r.checked_at).toLocaleTimeString());
+  const latency = rows.map((r) => (r.is_up ? r.latency_ms : null));
+  const failures = rows.map((r) => (r.is_up ? null : 0));
+
+  if (!chart) {
+    chart = new Chart($("chart"), {
+      type: "line",
+      data: {
+        labels,
+        datasets: [
+          { label: "Latency (ms)", data: latency, borderColor: "#2f6fed", backgroundColor: "#2f6fed33",
+            tension: 0.25, spanGaps: false },
+          { label: "Failed check", data: failures, borderColor: "#d64545", backgroundColor: "#d64545",
+            showLine: false, pointStyle: "crossRot", pointRadius: 7, pointBorderWidth: 3 },
+        ],
+      },
+      options: { responsive: true, maintainAspectRatio: false, animation: false,
+                 scales: { y: { beginAtZero: true, title: { display: true, text: "ms" } } } },
+    });
+  } else {
+    chart.data.labels = labels;
+    chart.data.datasets[0].data = latency;
+    chart.data.datasets[1].data = failures;
+    chart.update("none");
+  }
+}
+
+async function loadEvents() {
+  const events = await api("/events?limit=50");
+  const newest = events.length ? events[0].id : 0;
+  if (lastEventId !== null) {
+    events.filter((ev) => ev.id > lastEventId).reverse().forEach(toast);
+  }
+  lastEventId = Math.max(lastEventId ?? 0, newest);
+
+  const level = $("event-level").value;
+  const shown = level ? events.filter((ev) => ev.level === level) : events;
+  $("events-body").innerHTML = shown.length ? shown.map((ev) => `
+    <tr>
+      <td>${esc(fmtTime(ev.created_at))}</td>
+      <td><span class="badge ${esc(ev.level)}">${esc(ev.level)}</span></td>
+      <td>${esc(ev.target_name)}</td>
+      <td>${esc(ev.message)}</td>
+    </tr>`).join("")
+    : `<tr><td colspan="4" class="muted">No events yet.</td></tr>`;
+}
+
+async function refresh() {
+  if (refreshing) return;
+  refreshing = true;
+  try {
+    await loadStatus();
+    await Promise.all([loadChart(), loadEvents()]);
+    $("updated").textContent = "Updated " + new Date().toLocaleTimeString();
+  } catch (err) {
+    $("updated").textContent = "Cannot reach server";
+  } finally {
+    refreshing = false;
+  }
+}
+
+$("target-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const body = {
+    name: $("f-name").value,
+    address: $("f-address").value,
+    check_type: $("f-type").value,
+    interval_seconds: Number($("f-interval").value),
+    warning_ms: Number($("f-warning").value),
+    critical_ms: Number($("f-critical").value),
+    is_active: $("f-active").checked,
+  };
+  try {
+    const url = editingId ? "/targets/" + editingId : "/targets";
+    const method = editingId ? "PUT" : "POST";
+    const saved = await api(url, { method, headers: JSON_HEADERS, body: JSON.stringify(body) });
+    selectedId = saved.id;
+    resetForm();
+    showMessage("Saved.", "ok");
+    await refresh();
+  } catch (err) {
+    showMessage(err.message, "error");
+  }
+});
+
+$("cancel-btn").addEventListener("click", () => { resetForm(); $("form-msg").hidden = true; });
+
+$("targets-body").addEventListener("click", async (e) => {
+  const btn = e.target.closest("button[data-act]");
+  if (!btn) return;
+  const id = Number(btn.dataset.id);
+  try {
+    if (btn.dataset.act === "chart") {
+      selectedId = id;
+    } else if (btn.dataset.act === "check") {
+      btn.disabled = true;
+      await api("/targets/" + id + "/check", { method: "POST" });
+    } else if (btn.dataset.act === "delete") {
+      if (!confirm("Delete this target and its history?")) return;
+      await api("/targets/" + id, { method: "DELETE" });
+      if (selectedId === id) selectedId = null;
+    } else if (btn.dataset.act === "edit") {
+      const t = await api("/targets/" + id);
+      editingId = t.id;
+      $("f-name").value = t.name;
+      $("f-address").value = t.address;
+      $("f-type").value = t.check_type;
+      $("f-interval").value = t.interval_seconds;
+      $("f-warning").value = t.warning_ms;
+      $("f-critical").value = t.critical_ms;
+      $("f-active").checked = t.is_active;
+      $("form-title").textContent = "Edit target";
+      $("save-btn").textContent = "Save changes";
+      $("cancel-btn").hidden = false;
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    await refresh();
+  } catch (err) {
+    showMessage(err.message, "error");
+  }
+});
+
+$("filter").addEventListener("change", () => {
+  const f = $("filter").value;
+  $("export").href = "/report.csv" + (f ? "?state=" + f : "");
+  refresh();
+});
+$("event-level").addEventListener("change", refresh);
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

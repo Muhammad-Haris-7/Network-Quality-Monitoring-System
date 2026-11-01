@@ -154,3 +154,95 @@ def test_scheduler_due_logic(base_url):
         assert run_due_checks(db) == 0   # just checked, so not due again yet
     finally:
         db.close()
+
+
+
+
+
+ # ---- Week 3: events, filter, report, dashboard ----
+
+def test_down_target_creates_critical_event():
+    tid = make_target("Dead", "http://127.0.0.1:1")
+    client.post(f"/targets/{tid}/check")
+    events = client.get("/events").json()
+    assert len(events) == 1
+    assert events[0]["level"] == "critical"
+    assert events[0]["target_name"] == "Dead"
+
+
+def test_slow_target_creates_warning_event(base_url):
+    tid = make_target("Slow", f"{base_url}/slow", critical_ms=5000)
+    client.post(f"/targets/{tid}/check")
+    events = client.get("/events").json()
+    assert len(events) == 1
+    assert events[0]["level"] == "warning"
+
+
+def test_no_duplicate_event_when_state_does_not_change():
+    tid = make_target("Dead", "http://127.0.0.1:1")
+    client.post(f"/targets/{tid}/check")
+    client.post(f"/targets/{tid}/check")
+    client.post(f"/targets/{tid}/check")
+    assert len(client.get("/events").json()) == 1
+
+
+def test_healthy_target_creates_no_event(base_url):
+    tid = make_target("Fine", f"{base_url}/ok")
+    client.post(f"/targets/{tid}/check")
+    assert client.get("/events").json() == []
+
+
+def test_recovery_creates_recovered_event(base_url):
+    tid = make_target("Flaky", f"{base_url}/error")
+    client.post(f"/targets/{tid}/check")          # HTTP 500 -> critical
+    fixed = {
+        "name": "Flaky", "address": f"{base_url}/ok", "check_type": "http",
+        "interval_seconds": 60, "warning_ms": 500, "critical_ms": 2000,
+    }
+    assert client.put(f"/targets/{tid}", json=fixed).status_code == 200
+    client.post(f"/targets/{tid}/check")          # now healthy -> recovered
+    levels = [e["level"] for e in client.get("/events").json()]
+    assert levels == ["recovered", "critical"]    # newest first
+
+
+def test_events_filter_by_level(base_url):
+    dead = make_target("Dead", "http://127.0.0.1:1")
+    slow = make_target("Slow", f"{base_url}/slow", critical_ms=5000)
+    client.post(f"/targets/{dead}/check")
+    client.post(f"/targets/{slow}/check")
+    critical = client.get("/events?level=critical").json()
+    assert len(critical) == 1 and critical[0]["target_name"] == "Dead"
+    assert client.get("/events?level=banana").status_code == 422
+
+
+def test_status_filter(base_url):
+    ok = make_target("Fine", f"{base_url}/ok")
+    dead = make_target("Dead", "http://127.0.0.1:1")
+    client.post(f"/targets/{ok}/check")
+    client.post(f"/targets/{dead}/check")
+    down = client.get("/status?state=down").json()
+    assert len(down) == 1 and down[0]["name"] == "Dead"
+    assert len(client.get("/status").json()) == 2
+    assert client.get("/status?state=banana").status_code == 422
+
+
+def test_csv_report(base_url):
+    tid = make_target("Fine", f"{base_url}/ok")
+    client.post(f"/targets/{tid}/check")
+    r = client.get("/report.csv")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/csv")
+    lines = r.text.strip().splitlines()
+    assert lines[0].startswith("Name,Address,State")
+    assert "Fine" in lines[1]
+
+
+def test_csv_blocks_formula_injection(base_url):
+    make_target("=SUM(1+1)", f"{base_url}/ok")
+    assert "'=SUM(1+1)" in client.get("/report.csv").text
+
+
+def test_dashboard_is_served():
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "Network Monitor" in r.text       

@@ -68,3 +68,10 @@ class TargetStatus(BaseModel):
     total_checks: int
 
 
+class EventOut(BaseModel):
+    id: int
+    target_id: int
+    target_name: str
+    created_at: datetime
+    level: str  # warning, critical, recovered
+    message: str
